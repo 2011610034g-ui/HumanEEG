@@ -1,0 +1,308 @@
+% ==== ファイル設定 ====
+file_305b20  = 'D:\k\3-0.5mA-b20,ALLchanels.CSV';
+file_305a30  = 'D:\k\3-0.5mA-a30,ALLchanels.CSV';
+file_305pb20 = 'D:\k\3-0.5mAp-b20-ALLchanels.CSV';
+file_305pa30 = 'D:\k\3-0.5mAp-a30,ALLchanels.CSV';
+fs = 1000;
+
+% ==== チャネル情報 ====
+locfile = which('standard-10-5-cap385.elp');
+locs = readlocs(locfile);
+fid = fopen(file_305b20, 'r'); for i = 1:3, fgetl(fid); end
+header = fgetl(fid); fclose(fid);
+labels = strsplit(header, ',');
+chan_labels = labels(3:21);
+for i = 1:length(chan_labels)
+    chan_labels{i} = strrep(chan_labels{i}, '"', '');
+    chan_labels{i} = strrep(chan_labels{i}, '　', '');
+    chan_labels{i} = regexprep(chan_labels{i}, '\s+', '');
+end
+my_chanlocs = [];
+for i = 1:length(chan_labels)
+    idx = find(strcmpi({locs.labels}, chan_labels{i}));
+    if ~isempty(idx)
+        my_chanlocs = [my_chanlocs locs(idx)];
+    end
+end
+
+% ==== データ読み込み ====
+files = {file_305b20, file_305a30, file_305pb20, file_305pa30};
+data = cell(1,4);
+for i = 1:4
+    opts = detectImportOptions(files{i}, 'NumHeaderLines', 4);
+    tbl = readtable(files{i}, opts);
+    data{i} = tbl{:, 3:21};
+end
+
+% ==== 前処理関数（フィルター＋ICA＋まばたき除去） ====
+process = @(d) pop_subcomp(pop_iclabel(pop_runica( ...
+    pop_eegfiltnew(pop_eegfiltnew( ...
+    pop_importdata('dataformat','array','data',d','srate',fs,'chanlocs',my_chanlocs), ...
+    59, 61, [], 1), 0.5, 80), 'extended', 1, 'interrupt','on'), 'default'), ...
+    find(pop_iclabel(pop_runica( ...
+    pop_eegfiltnew(pop_eegfiltnew( ...
+    pop_importdata('dataformat','array','data',d','srate',fs,'chanlocs',my_chanlocs), ...
+    59, 61, [], 1), 0.5, 80), 'extended', 1, 'interrupt','on'), 'default') ...
+    .etc.ic_classification.ICLabel.classifications(:,3) > 0.9), 0);
+
+% ==== 前処理実行 ====
+EEG_real_pre  = process(data{1});
+EEG_real_post = process(data{2});
+EEG_sham_pre  = process(data{3});
+EEG_sham_post = process(data{4});
+
+% ==== スペクトル（µV²/Hz） ====
+[spec1_dB, f] = spectopo(EEG_real_pre.data,  0, fs, 'plot','off');
+[spec2_dB, ~] = spectopo(EEG_real_post.data, 0, fs, 'plot','off');
+[spec3_dB, ~] = spectopo(EEG_sham_pre.data,  0, fs, 'plot','off');
+[spec4_dB, ~] = spectopo(EEG_sham_post.data, 0, fs, 'plot','off');
+
+spec1 = 10.^(spec1_dB / 10);
+spec2 = 10.^(spec2_dB / 10);
+spec3 = 10.^(spec3_dB / 10);
+spec4 = 10.^(spec4_dB / 10);
+
+% ==== アルファ波（8–13Hz）抽出 ====
+alpha_idx = find(f >= 8 & f <= 13);
+alpha_real_pre  = mean(spec1(:, alpha_idx), 2);
+alpha_real_post = mean(spec2(:, alpha_idx), 2);
+alpha_sham_pre  = mean(spec3(:, alpha_idx), 2);
+alpha_sham_post = mean(spec4(:, alpha_idx), 2);
+
+% ==== dB差分計算 ====
+alpha_diff_real = 10 * log10(alpha_real_post ./ alpha_real_pre);
+alpha_diff_sham = 10 * log10(alpha_sham_post ./ alpha_sham_pre);
+
+% ==== カラーバースケール（絶対パワー & dB） ====
+cmin = min([alpha_real_pre; alpha_real_post; alpha_sham_pre; alpha_sham_post]);
+cmax = max([alpha_real_pre; alpha_real_post; alpha_sham_pre; alpha_sham_post]);
+diff_lim = max(abs([alpha_diff_real; alpha_diff_sham]));
+
+% ==== 6マップ表示（2行 × 3列） ====
+figure('Name','Alpha Power & Difference (0.5mA vs Placebo)', 'Position', [100, 100, 1600, 800]);
+
+% Pre µV²/Hz
+subplot(2,3,1);
+topoplot(alpha_real_pre, EEG_real_post.chanlocs, ...
+         'maplimits', [cmin cmax], 'electrodes', 'labelpoint');
+colorbar; ylabel(colorbar, 'Power (\muV^2/Hz)');
+title('0.5mA Real - Pre');
+
+subplot(2,3,2);
+topoplot(alpha_sham_pre, EEG_sham_post.chanlocs, ...
+         'maplimits', [cmin cmax], 'electrodes', 'labelpoint');
+colorbar; ylabel(colorbar, 'Power (\muV^2/Hz)');
+title('0.5mA Placebo - Pre');
+
+subplot(2,3,3);
+topoplot(alpha_diff_real, EEG_real_post.chanlocs, ...
+         'maplimits', [-diff_lim diff_lim], 'electrodes', 'labelpoint');
+colorbar; ylabel(colorbar, '\Delta Power (dB)');
+title('0.5mA Real: Post − Pre');
+
+% Post µV²/Hz
+subplot(2,3,4);
+topoplot(alpha_real_post, EEG_real_post.chanlocs, ...
+         'maplimits', [cmin cmax], 'electrodes', 'labelpoint');
+colorbar; ylabel(colorbar, 'Power (\muV^2/Hz)');
+title('0.5mA Real - Post');
+
+subplot(2,3,5);
+topoplot(alpha_sham_post, EEG_sham_post.chanlocs, ...
+         'maplimits', [cmin cmax], 'electrodes', 'labelpoint');
+colorbar; ylabel(colorbar, 'Power (\muV^2/Hz)');
+title('0.5mA Placebo - Post');
+
+subplot(2,3,6);
+topoplot(alpha_diff_sham, EEG_sham_post.chanlocs, ...
+         'maplimits', [-diff_lim diff_lim], 'electrodes', 'labelpoint');
+colorbar; ylabel(colorbar, '\Delta Power (dB)');
+title('0.5mA Placebo: Post − Pre');
+
+ 
+% ==== 前処理実行 ====
+EEG_05mA_Real_Pre     = process(data{1});
+EEG_05mA_Real_Post    = process(data{2});
+EEG_05mA_Placebo_Pre  = process(data{3});
+EEG_05mA_Placebo_Post = process(data{4});
+
+% ==== アルファ波（8–13Hz）抽出 ====
+alpha_idx = find(f >= 8 & f <= 13);
+alpha_real_pre  = mean(spec1(:, alpha_idx), 2);
+alpha_real_post = mean(spec2(:, alpha_idx), 2);
+alpha_sham_pre  = mean(spec3(:, alpha_idx), 2);
+alpha_sham_post = mean(spec4(:, alpha_idx), 2);
+
+% ==== dB差分計算 ====
+alpha_diff_real = 10 * log10(alpha_real_post ./ alpha_real_pre);
+alpha_diff_sham = 10 * log10(alpha_sham_post ./ alpha_sham_pre);
+
+% ==== カラーバースケール（絶対パワー & dB） ====
+cmin = min([alpha_real_pre; alpha_real_post; alpha_sham_pre; alpha_sham_post]);
+cmax = max([alpha_real_pre; alpha_real_post; alpha_sham_pre; alpha_sham_post]);
+diff_lim = max(abs([alpha_diff_real; alpha_diff_sham]));
+
+% ==== 6マップ表示（2行 × 3列） ====
+figure('Name','Alpha Power & Difference (0.5mA vs Placebo)', 'Position', [100, 100, 1600, 800]);
+
+% Pre µV²/Hz
+subplot(2,3,1);
+topoplot(alpha_real_pre, EEG_real_post.chanlocs, ...
+         'maplimits', [cmin cmax], 'electrodes', 'labelpoint');
+colorbar; ylabel(colorbar, 'Power (\muV^2/Hz)');
+title('0.5mA Real - Pre');
+
+subplot(2,3,2);
+topoplot(alpha_sham_pre, EEG_sham_post.chanlocs, ...
+         'maplimits', [cmin cmax], 'electrodes', 'labelpoint');
+colorbar; ylabel(colorbar, 'Power (\muV^2/Hz)');
+title('0.5mA Placebo - Pre');
+
+subplot(2,3,3);
+topoplot(alpha_diff_real, EEG_real_post.chanlocs, ...
+         'maplimits', [-diff_lim diff_lim], 'electrodes', 'labelpoint');
+colorbar; ylabel(colorbar, '\Delta Power (dB)');
+title('0.5mA Real: Post − Pre');
+
+% Post µV²/Hz
+subplot(2,3,4);
+topoplot(alpha_real_post, EEG_real_post.chanlocs, ...
+         'maplimits', [cmin cmax], 'electrodes', 'labelpoint');
+colorbar; ylabel(colorbar, 'Power (\muV^2/Hz)');
+title('0.5mA Real - Post');
+
+subplot(2,3,5);
+topoplot(alpha_sham_post, EEG_sham_post.chanlocs, ...
+         'maplimits', [cmin cmax], 'electrodes', 'labelpoint');
+colorbar; ylabel(colorbar, 'Power (\muV^2/Hz)');
+title('0.5mA Placebo - Post');
+
+subplot(2,3,6);
+topoplot(alpha_diff_sham, EEG_sham_post.chanlocs, ...
+         'maplimits', [-diff_lim diff_lim], 'electrodes', 'labelpoint');
+colorbar; ylabel(colorbar, '\Delta Power (dB)');
+title('0.5mA Placebo: Post − Pre');
+
+
+ 
+% ==== 前処理実行 ====
+EEG_05mA_Real_Pre     = process(data{1});
+EEG_05mA_Real_Post    = process(data{2});
+EEG_05mA_Placebo_Pre  = process(data{3});
+EEG_05mA_Placebo_Post = process(data{4});
+
+% ==== アルファ波（8–13Hz）抽出 ====
+alpha_idx = find(f >= 8 & f <= 13);
+alpha_real_pre  = mean(spec1(:, alpha_idx), 2);
+alpha_real_post = mean(spec2(:, alpha_idx), 2);
+alpha_sham_pre  = mean(spec3(:, alpha_idx), 2);
+alpha_sham_post = mean(spec4(:, alpha_idx), 2);
+
+% ==== dB差分計算 ====
+alpha_diff_real = 10 * log10(alpha_real_post ./ alpha_real_pre);
+alpha_diff_sham = 10 * log10(alpha_sham_post ./ alpha_sham_pre);
+
+% ==== カラーバースケール（絶対パワー & dB） ====
+cmin = min([alpha_real_pre; alpha_real_post; alpha_sham_pre; alpha_sham_post]);
+cmax = max([alpha_real_pre; alpha_real_post; alpha_sham_pre; alpha_sham_post]);
+diff_lim = max(abs([alpha_diff_real; alpha_diff_sham]));
+
+% ==== 6マップ表示（2行 × 3列） ====
+figure('Name','Alpha Power & Difference (0.5mA vs Placebo)', 'Position', [100, 100, 1600, 800]);
+
+% Pre µV²/Hz
+subplot(2,3,1);
+topoplot(alpha_real_pre, EEG_real_post.chanlocs, ...
+         'maplimits', [cmin cmax], 'electrodes', 'labelpoint');
+colorbar; ylabel(colorbar, 'Power (\muV^2/Hz)');
+title('0.5mA Real - Pre');
+
+subplot(2,3,2);
+topoplot(alpha_sham_pre, EEG_sham_post.chanlocs, ...
+         'maplimits', [cmin cmax], 'electrodes', 'labelpoint');
+colorbar; ylabel(colorbar, 'Power (\muV^2/Hz)');
+title('0.5mA Placebo - Pre');
+
+subplot(2,3,3);
+topoplot(alpha_diff_real, EEG_real_post.chanlocs, ...
+         'maplimits', [-diff_lim diff_lim], 'electrodes', 'labelpoint');
+colorbar; ylabel(colorbar, '\Delta Power (dB)');
+title('0.5mA Real: Post − Pre');
+
+% Post µV²/Hz
+subplot(2,3,4);
+topoplot(alpha_real_post, EEG_real_post.chanlocs, ...
+         'maplimits', [cmin cmax], 'electrodes', 'labelpoint');
+colorbar; ylabel(colorbar, 'Power (\muV^2/Hz)');
+title('0.5mA Real - Post');
+
+subplot(2,3,5);
+topoplot(alpha_sham_post, EEG_sham_post.chanlocs, ...
+         'maplimits', [cmin cmax], 'electrodes', 'labelpoint');
+colorbar; ylabel(colorbar, 'Power (\muV^2/Hz)');
+title('0.5mA Placebo - Post');
+
+subplot(2,3,6);
+topoplot(alpha_diff_sham, EEG_sham_post.chanlocs, ...
+         'maplimits', [-diff_lim diff_lim], 'electrodes', 'labelpoint');
+colorbar; ylabel(colorbar, '\Delta Power (dB)');
+title('0.5mA Placebo: Post − Pre');
+
+
+ 
+% ==== ベータ波（13–30Hz）抽出 ====
+beta_idx = find(f >= 13 & f <= 30);
+beta_05mA_Real_Pre     = mean(spec1(:, beta_idx), 2);
+beta_05mA_Real_Post    = mean(spec2(:, beta_idx), 2);
+beta_05mA_Placebo_Pre  = mean(spec3(:, beta_idx), 2);
+beta_05mA_Placebo_Post = mean(spec4(:, beta_idx), 2);
+
+% ==== dB差分計算 ====
+beta_diff_05mA_Real_dB    = 10 * log10(beta_05mA_Real_Post ./ beta_05mA_Real_Pre);
+beta_diff_05mA_Placebo_dB = 10 * log10(beta_05mA_Placebo_Post ./ beta_05mA_Placebo_Pre);
+
+% ==== カラーバースケール（µV²/Hz & dB） ====
+cmin = min([beta_05mA_Real_Pre; beta_05mA_Real_Post; beta_05mA_Placebo_Pre; beta_05mA_Placebo_Post]);
+cmax = max([beta_05mA_Real_Pre; beta_05mA_Real_Post; beta_05mA_Placebo_Pre; beta_05mA_Placebo_Post]);
+diff_lim = max(abs([beta_diff_05mA_Real_dB; beta_diff_05mA_Placebo_dB]));
+
+% ==== topoplot表示（ベータ） ====
+figure('Name','Beta Power & Difference (0.5mA vs Placebo)', 'Position', [100, 100, 1600, 800]);
+
+% Pre µV²/Hz
+subplot(2,3,1);
+topoplot(beta_05mA_Real_Pre, EEG_05mA_Real_Post.chanlocs, ...
+         'maplimits', [cmin cmax], 'electrodes', 'labelpoint');
+colorbar; ylabel(colorbar, 'Power (\muV^2/Hz)');
+title('0.5mA Real - Pre (Beta)');
+
+subplot(2,3,2);
+topoplot(beta_05mA_Placebo_Pre, EEG_05mA_Placebo_Post.chanlocs, ...
+         'maplimits', [cmin cmax], 'electrodes', 'labelpoint');
+colorbar; ylabel(colorbar, 'Power (\muV^2/Hz)');
+title('0.5mA Placebo - Pre (Beta)');
+
+subplot(2,3,3);
+topoplot(beta_diff_05mA_Real_dB, EEG_05mA_Real_Post.chanlocs, ...
+         'maplimits', [-diff_lim diff_lim], 'electrodes', 'labelpoint');
+colorbar; ylabel(colorbar, '\Delta Power (dB)');
+title('0.5mA Real: Post − Pre (Beta)');
+
+% Post µV²/Hz
+subplot(2,3,4);
+topoplot(beta_05mA_Real_Post, EEG_05mA_Real_Post.chanlocs, ...
+         'maplimits', [cmin cmax], 'electrodes', 'labelpoint');
+colorbar; ylabel(colorbar, 'Power (\muV^2/Hz)');
+title('0.5mA Real - Post (Beta)');
+
+subplot(2,3,5);
+topoplot(beta_05mA_Placebo_Post, EEG_05mA_Placebo_Post.chanlocs, ...
+         'maplimits', [cmin cmax], 'electrodes', 'labelpoint');
+colorbar; ylabel(colorbar, 'Power (\muV^2/Hz)');
+title('0.5mA Placebo - Post (Beta)');
+
+subplot(2,3,6);
+topoplot(beta_diff_05mA_Placebo_dB, EEG_05mA_Placebo_Post.chanlocs, ...
+         'maplimits', [-diff_lim diff_lim], 'electrodes', 'labelpoint');
+colorbar; ylabel(colorbar, '\Delta Power (dB)');
+title('0.5mA Placebo: Post − Pre (Beta)');
